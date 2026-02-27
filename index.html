@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <title>IP 域名信息查询 - NetScope</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="description" content="查询IP地址和域名的详细信息，包括地理位置、运营商等。" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <link rel="icon" href="https://fav.farm/🌐" />
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <!-- Navbar -->
+    <header class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <i data-lucide="activity" class="nav-icon"></i>
+                <h1 class="nav-title">NetScope<span class="accent">Query</span></h1>
+            </div>
+            <button id="refresh-btn" class="icon-btn" title="刷新数据">
+                <i data-lucide="refresh-cw"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- IP Overview Cards -->
+        <div class="ip-cards-grid">
+            <!-- Global IP Card -->
+            <div class="ip-card">
+                <div class="card-icon-bg">
+                    <i data-lucide="globe" class="card-icon"></i>
+                </div>
+                <h2 class="card-label">全球互联网 IP</h2>
+                <div id="user-ip" class="card-value loading-shimmer">加载中...</div>
+            </div>
+
+            <!-- Domestic IP Card -->
+            <div class="ip-card">
+                <div class="card-icon-bg domestic">
+                    <i data-lucide="map-pin" class="card-icon"></i>
+                </div>
+                <h2 class="card-label">国内 IP 地址</h2>
+                <div id="result" class="card-value loading-shimmer">加载中...</div>
+            </div>
+
+            <!-- Exit Node Card -->
+            <div class="ip-card">
+                <div class="card-icon-bg exit">
+                    <i data-lucide="shield" class="card-icon"></i>
+                </div>
+                <h2 class="card-label">谷歌服务节点</h2>
+                <div id="blocked-site-ip" class="card-value loading-shimmer">加载中...</div>
+            </div>
+        </div>
+
+        <!-- Map & Query Section -->
+        <div class="map-section">
+            <!-- Search Bar -->
+            <div class="search-container">
+                <div class="search-wrapper">
+                    <i data-lucide="search" class="search-icon"></i>
+                    <input 
+                        type="text" 
+                        id="domain-input" 
+                        list="history-list" 
+                        placeholder="输入域名 (如 google.com) 或 IP 地址进行追踪..."
+                        class="search-input"
+                    />
+                    <datalist id="history-list"></datalist>
+                </div>
+                <button id="submit-btn" class="search-btn">
+                    <i data-lucide="navigation"></i>
+                    <span>追踪</span>
+                </button>
+            </div>
+
+            <!-- Query Result -->
+            <div id="query-result-container" class="query-result"></div>
+
+            <!-- Map Container -->
+            <div class="map-wrapper">
+                <div id="map-container"></div>
+            </div>
+        </div>
+
+        <!-- Global Service Connectivity -->
+        <div class="connectivity-section">
+            <div class="section-header">
+                <div class="section-title">
+                    <i data-lucide="activity"></i>
+                    <h2>全球服务连通性</h2>
+                </div>
+                <button id="retest-btn" class="retest-btn">
+                    <i data-lucide="refresh-cw"></i>
+                    <span>重新测试</span>
+                </button>
+            </div>
+            
+            <div class="service-grid" id="service-grid">
+                <!-- Services will be dynamically loaded here -->
+            </div>
+        </div>
+    </main>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet-curve/leaflet.curve.js"></script>
+    <script src="scripts.js"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
+</body>
+</html>
