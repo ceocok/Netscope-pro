@@ -3,6 +3,49 @@ let userMarker;
 let queryMarker;
 let queryLine;
 let userLocation = null;
+let currentPublicIp = null;
+let exitNodeIp = null;
+let domesticIp = null;
+let runQualityCheckHandler = null;
+let qualityCache = { ip: null, ts: 0, data: null };
+
+
+const COUNTRY_ZH_MAP = {
+    'CN': '中国', 'JP': '日本', 'US': '美国', 'FR': '法国', 'DE': '德国', 'GB': '英国',
+    'HK': '中国香港', 'TW': '中国台湾', 'SG': '新加坡', 'KR': '韩国', 'RU': '俄罗斯',
+    'CA': '加拿大', 'AU': '澳大利亚', 'IN': '印度', 'NL': '荷兰', 'SE': '瑞典', 'CH': '瑞士'
+};
+
+const CITY_ZH_MAP = {
+    'Tokyo': '东京', 'Paris': '巴黎', 'Singapore': '新加坡', 'Hong Kong': '香港',
+    'Beijing': '北京', 'Shanghai': '上海', 'Xiangtan': '湘潭', 'Ebara': '东京', 'Yongzhou': '永州', 'Mong Kok': '旺角', 'Yau Tsim Mong': '油尖旺区', 'Hong Kong': '中国香港'
+};
+
+function toZhCountry(v) {
+    if (!v) return '未知';
+    const s = String(v).trim();
+    const up = s.toUpperCase();
+    if (COUNTRY_ZH_MAP[up]) return COUNTRY_ZH_MAP[up];
+    const byName = {
+        'China': '中国', 'Japan': '日本', 'United States': '美国', 'France': '法国',
+        'Germany': '德国', 'United Kingdom': '英国', 'Singapore': '新加坡', 'Korea': '韩国', 'Hong Kong': '中国香港', 'Hong Kong SAR': '中国香港'
+    };
+    return byName[s] || s;
+}
+
+function toZhCity(v) {
+    if (!v) return '';
+    const s = String(v).trim();
+    return CITY_ZH_MAP[s] || s;
+}
+
+function formatLocationZh(city, country) {
+    const c = toZhCity(city);
+    const n = toZhCountry(country);
+    if (c && n && c !== 'N/A' && n !== '未知') return `${c}，${n}`;
+    if (n && n !== '未知') return n;
+    return c || '未知';
+}
 
 // 全球服务列表配置
 const globalServices = [
@@ -160,89 +203,167 @@ function getUserLocation() {
     }
 }
 
-function getUserIP() {
+async function getUserIP() {
     const userIpElem = document.getElementById("user-ip");
     userIpElem.classList.add('loading-shimmer');
-    
-    // 使用国际IP查询服务（会触发分流规则）
-    // 优先使用ipify（Cloudflare托管），如果失败则使用ipapi.co
-    fetch("https://api.ipify.org?format=json")
-        .then((response) => response.json())
-        .then((data) => {
-            if (data.ip) {
-                return fetchIPDataWithFallback(data.ip);
-            } else {
-                throw new Error('无法获取IP');
+
+    // 优先使用更能反映代理出口的服务
+    const providers = [
+        {
+            name: 'ipinfo.io',
+            url: 'https://ipinfo.io/json',
+            parse: (data) => ({
+                ip: data.ip,
+                city: data.city,
+                country_name: data.country
+            })
+        },
+        {
+            name: 'api64.ipify.org',
+            url: 'https://api64.ipify.org?format=json',
+            parse: (data) => ({
+                ip: data.ip,
+                city: null,
+                country_name: null
+            })
+        },
+        {
+            name: 'ipapi.co',
+            url: 'https://ipapi.co/json/',
+            parse: (data) => ({
+                ip: data.ip,
+                city: data.city,
+                country_name: data.country_name
+            })
+        }
+    ];
+
+    try {
+        let lastErr = null;
+        let data = null;
+
+        for (const p of providers) {
+            try {
+                const response = await fetchWithTimeout(p.url, { headers: { 'Accept': 'application/json' } }, 8000);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const raw = await response.json();
+                const parsed = p.parse(raw);
+                if (!parsed.ip) throw new Error('缺少IP字段');
+                data = parsed;
+                break;
+            } catch (e) {
+                lastErr = e;
             }
-        })
-        .then((data) => {
-            userIpElem.classList.remove('loading-shimmer');
-            userIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
-                                    <div style="font-size: 0.875rem; color: var(--text-secondary);">${data.city || ''}, ${data.country_name || ''}</div>`;
-        })
-        .catch((error) => {
-            console.error(error);
-            // 如果ipify失败，直接使用ipapi.co
-            fetchIPDataWithFallback('')
-                .then((data) => {
-                    userIpElem.classList.remove('loading-shimmer');
-                    userIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
-                                            <div style="font-size: 0.875rem; color: var(--text-secondary);">${data.city || ''}, ${data.country_name || ''}</div>`;
-                })
-                .catch((error) => {
-                    console.error(error);
-                    userIpElem.classList.remove('loading-shimmer');
-                    userIpElem.textContent = "获取失败";
-                });
-        });
+        }
+
+        if (!data) throw lastErr || new Error('无法获取公网IP');
+
+        currentPublicIp = data.ip;
+        userIpElem.classList.remove('loading-shimmer');
+        const locationText = formatLocationZh(data.city, data.country_name);
+        userIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
+                                <div style="font-size: 0.875rem; color: var(--text-secondary);">${locationText}</div>`;
+    } catch (error) {
+        console.error('获取用户IP失败:', error);
+        userIpElem.classList.remove('loading-shimmer');
+
+        let errorMsg = '请检查网络连接';
+        if (error.message.includes('超时')) {
+            errorMsg = 'API 超时，请稍后重试';
+        } else if (error.message.includes('网络错误')) {
+            errorMsg = '网络错误，请检查连接';
+        } else if (error.message.includes('限流') || error.message.includes('429')) {
+            errorMsg = '服务限流，请稍后重试';
+        }
+
+        userIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
+                                <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
+    }
 }
 
-function getBlockedSiteIP() {
+async function getBlockedSiteIP() {
     const blockedSiteIpElem = document.getElementById("blocked-site-ip");
     blockedSiteIpElem.classList.add('loading-shimmer');
     
-    fetch("https://ipleak.net/json/")
-        .then((response) => response.json())
-        .then((data) => {
-            blockedSiteIpElem.classList.remove('loading-shimmer');
-            blockedSiteIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
-                                           <div style="font-size: 0.875rem; color: var(--text-secondary);">${data.country_name || 'Unknown'}</div>`;
-        })
-        .catch((error) => {
-            console.error(error);
-            blockedSiteIpElem.classList.remove('loading-shimmer');
-            blockedSiteIpElem.textContent = "获取失败";
-        });
+    try {
+        const response = await fetchWithTimeout("https://ipleak.net/json/", {
+            headers: {
+                'Accept': 'application/json'
+            }
+        }, 8000);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        exitNodeIp = data.ip || null;
+        blockedSiteIpElem.classList.remove('loading-shimmer');
+        const blockedLocation = formatLocationZh(data.city_name || data.city, data.country_name || data.country);
+        blockedSiteIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
+                                       <div style="font-size: 0.875rem; color: var(--text-secondary);">${blockedLocation}</div>`;
+    } catch (error) {
+        console.error('获取被墙站点IP失败:', error);
+        blockedSiteIpElem.classList.remove('loading-shimmer');
+        
+        let errorMsg = 'API不可用';
+        if (error.message.includes('超时')) {
+            errorMsg = 'API 超时，请稍后重试';
+        } else if (error.message.includes('网络错误')) {
+            errorMsg = '网络错误，请检查连接';
+        }
+        
+        blockedSiteIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
+                                       <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
+    }
 }
 
-function getResultData() {
+async function getResultData() {
     const resultElem = document.getElementById("result");
     resultElem.classList.add('loading-shimmer');
     
-    fetch("https://ipv4_ct.itdog.cn")
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`网络响应失败: ${response.statusText}`);
+    try {
+        const response = await fetchWithTimeout("https://ipv4_ct.itdog.cn", {
+            headers: {
+                'Accept': 'application/json'
             }
-            return response.json();
-        })
-        .then(data => {
-            resultElem.classList.remove('loading-shimmer');
-            if (data.type === 'success' && data.ip && data.address) {
-                const displayAddress = data.address.replace(/\//g, " ");
-                resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
-                                        <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
-            } else {
-                const errorMsg = data.message || '返回数据格式不正确';
-                console.error("itdog API error:", errorMsg);
-                resultElem.textContent = `获取失败: ${errorMsg}`;
+        }, 8000);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        resultElem.classList.remove('loading-shimmer');
+        
+        if (data.type === 'success' && data.ip && data.address) {
+            domesticIp = data.ip;
+            const displayAddress = data.address.replace(/\//g, " ");
+            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
+                                    <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
+            if (typeof runQualityCheckHandler === 'function') {
+                runQualityCheckHandler();
             }
-        })
-        .catch(error => {
-            console.error("获取国内 IP 数据时出错:", error);
-            resultElem.classList.remove('loading-shimmer');
-            resultElem.textContent = "获取失败";
-        });
+        } else {
+            const errorMsg = data.message || '返回数据格式不正确';
+            console.error("itdog API error:", errorMsg);
+            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
+                                    <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
+        }
+    } catch (error) {
+        console.error("获取国内 IP 数据时出错:", error);
+        resultElem.classList.remove('loading-shimmer');
+        
+        let errorMsg = '请检查网络连接';
+        if (error.message.includes('超时')) {
+            errorMsg = 'API 超时，请稍后重试';
+        } else if (error.message.includes('网络错误')) {
+            errorMsg = '网络错误，请检查连接';
+        }
+        
+        resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
+                                <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
+    }
 }
 
 
@@ -268,8 +389,38 @@ function deg2rad(deg) {
     return deg * (Math.PI / 180);
 }
 
+// 统一网络请求超时封装
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        return response;
+        
+    } catch (error) {
+        clearTimeout(timeoutId);
+        
+        if (error.name === 'AbortError') {
+            throw new Error('请求超时');
+        }
+        
+        // 区分网络错误和其他错误
+        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+            throw new Error('网络错误，请检查连接');
+        }
+        
+        throw error;
+    }
+}
 
-// IP查询API列表（按优先级排序）
+
+// IP查询API列表（按优先级排序，使用支持HTTPS和CORS的API）
 const ipApiProviders = [
     {
         name: 'ipapi.co',
@@ -282,11 +433,12 @@ const ipApiProviders = [
             org: data.org,
             latitude: data.latitude,
             longitude: data.longitude
-        })
+        }),
+        rateLimit: 1000 // 添加延迟避免限流
     },
     {
         name: 'ip-api.com',
-        getUrl: (ip) => ip ? `http://ip-api.com/json/${ip}` : 'http://ip-api.com/json/',
+        getUrl: (ip) => ip ? `https://ip-api.com/json/${ip}` : 'https://ip-api.com/json/',
         parseResponse: (data) => ({
             ip: data.query,
             city: data.city,
@@ -295,49 +447,124 @@ const ipApiProviders = [
             org: data.isp,
             latitude: data.lat,
             longitude: data.lon
-        })
+        }),
+        rateLimit: 500
     },
     {
-        name: 'ipwhois.app',
-        getUrl: (ip) => ip ? `https://ipwhois.app/json/${ip}` : 'https://ipwhois.app/json/',
+        name: 'ipwho.is',
+        getUrl: (ip) => ip ? `https://ipwho.is/${ip}` : 'https://ipwho.is/',
         parseResponse: (data) => ({
             ip: data.ip,
             city: data.city,
             region: data.region,
             country_name: data.country,
-            org: data.isp,
+            org: data.connection?.isp || 'N/A',
             latitude: data.latitude,
             longitude: data.longitude
-        })
+        }),
+        rateLimit: 500
+    },
+    {
+        name: 'freeipapi.com',
+        getUrl: (ip) => ip ? `https://freeipapi.com/api/json/${ip}` : 'https://freeipapi.com/api/json/',
+        parseResponse: (data) => ({
+            ip: data.ipAddress,
+            city: data.cityName,
+            region: data.regionName,
+            country_name: data.countryName,
+            org: data.isProxy ? 'Proxy' : 'N/A',
+            latitude: data.latitude,
+            longitude: data.longitude
+        }),
+        rateLimit: 500
     }
 ];
 
 let currentApiIndex = 0;
+let lastApiCallTime = 0;
 
-// 使用多个API提供商获取IP数据
+// IP 质量检测 API 提供商
+const qualityApiProviders = [
+    {
+        name: 'ipapi.is',
+        url: (ip) => ip ? `https://api.ipapi.is/?q=${encodeURIComponent(ip)}` : 'https://api.ipapi.is/',
+        parse: (d) => ({
+            ip: d.ip || null,
+            isProxy: !!d.is_proxy,
+            isVpn: !!d.is_vpn,
+            isTor: !!d.is_tor,
+            isHosting: !!d.is_datacenter,
+            networkType: d.asn?.type || null,
+            companyType: d.company?.name || d.asn?.org || null,
+            asn: d.asn?.asn ? `AS${d.asn.asn}` : (d.asn?.number ? `AS${d.asn.number}` : null)
+        })
+    },
+    {
+        name: 'ipwho.is',
+        url: (ip) => ip ? `https://ipwho.is/${encodeURIComponent(ip)}` : 'https://ipwho.is/',
+        parse: (d) => ({
+            ip: d.ip || null,
+            isProxy: !!(d.security?.proxy ?? d.security?.is_proxy),
+            isVpn: !!(d.security?.vpn ?? d.security?.is_vpn),
+            isTor: !!(d.security?.tor ?? d.security?.is_tor),
+            isHosting: !!(d.security?.hosting ?? d.security?.is_hosting),
+            networkType: d.connection?.type || null,
+            companyType: d.connection?.org || null,
+            asn: d.connection?.asn ? `AS${String(d.connection.asn).replace(/^AS/i, '')}` : null
+        })
+    }
+];
+
+// 使用多个API提供商获取IP数据（带延迟和重试机制）
 async function fetchIPDataWithFallback(ip = '') {
+    const errors = [];
+    
     for (let i = 0; i < ipApiProviders.length; i++) {
         const apiIndex = (currentApiIndex + i) % ipApiProviders.length;
         const provider = ipApiProviders[apiIndex];
         
         try {
-            const response = await fetch(provider.getUrl(ip));
+            // 添加延迟避免频繁请求
+            const now = Date.now();
+            const timeSinceLastCall = now - lastApiCallTime;
+            if (timeSinceLastCall < provider.rateLimit) {
+                await new Promise(resolve => setTimeout(resolve, provider.rateLimit - timeSinceLastCall));
+            }
+            lastApiCallTime = Date.now();
+            
+            const response = await fetchWithTimeout(provider.getUrl(ip), {
+                headers: {
+                    'Accept': 'application/json'
+                }
+            }, 8000);
+            
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
+            
             const data = await response.json();
             const parsedData = provider.parseResponse(data);
             
+            // 验证返回的数据是否完整
+            if (!parsedData.ip || !parsedData.latitude || !parsedData.longitude) {
+                throw new Error('返回数据不完整');
+            }
+            
             // 如果成功，更新当前API索引
             currentApiIndex = apiIndex;
+            console.log(`✓ ${provider.name} 查询成功`);
             return parsedData;
+            
         } catch (error) {
-            console.warn(`${provider.name} 失败:`, error.message);
+            const errorMsg = error.message || '未知错误';
+            console.warn(`✗ ${provider.name} 失败: ${errorMsg}`);
+            errors.push(`${provider.name}: ${errorMsg}`);
             // 继续尝试下一个API
         }
     }
     
-    throw new Error('所有IP查询API都失败了');
+    console.error('所有IP查询API都失败了:', errors);
+    throw new Error(`所有IP查询API都失败了\n${errors.join('\n')}`);
 }
 
 function getDNSInfo() {
@@ -347,14 +574,46 @@ function getDNSInfo() {
     const isIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(input);
     const isIPv6 = /^[a-fA-F0-9:]+$/.test(input);
 
+    // 彩蛋：兼容旧指令“地图:地点”/"map:place"
+    const mapJumpMatch = input.match(/^(地图|map)\s*[:：]\s*(.+)$/i);
+    if (mapJumpMatch) {
+        const place = mapJumpMatch[2].trim();
+        if (place) jumpToPlaceOnMap(place);
+        return;
+    }
+
     const fetchDomainData = async (domain) => {
-        let response = await fetch(`https://dns.alidns.com/resolve?name=${domain}&type=A`);
-        let data = await response.json();
-        if (!data.Answer || data.Answer.length === 0) {
-            response = await fetch(`https://dns.alidns.com/resolve?name=${domain}&type=AAAA`);
-            data = await response.json();
+        // 优先 A（IPv4）
+        let responseA = await fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=A`, {}, 8000);
+        let dataA = await responseA.json();
+
+        let responseAAAA = await fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=AAAA`, {}, 8000);
+        let dataAAAA = await responseAAAA.json();
+
+        const hasA = dataA.Answer && dataA.Answer.length > 0;
+        const hasAAAA = dataAAAA.Answer && dataAAAA.Answer.length > 0;
+
+        if (hasA) {
+            // A 记录里优先取非特殊网段
+            const aRecords = dataA.Answer.map(x => x.data).filter(Boolean);
+            const nonSpecialA = aRecords.find(ip => !isSpecialIp(ip));
+            if (nonSpecialA) {
+                return { ...dataA, Answer: [{ ...dataA.Answer[0], data: nonSpecialA }] };
+            }
+
+            // 如果 A 全是特殊网段且存在 AAAA，则回退 AAAA
+            if (hasAAAA) {
+                return dataAAAA;
+            }
+
+            return dataA;
         }
-        return data;
+
+        if (hasAAAA) {
+            return dataAAAA;
+        }
+
+        return dataA;
     };
 
     if (isIPv4 || isIPv6) {
@@ -364,11 +623,19 @@ function getDNSInfo() {
                 console.error("查询 IP 出错：", error);
                 const resultContainer = document.getElementById("query-result-container");
                 resultContainer.classList.add('active');
+                
+                let errorMsg = '查询失败，请稍后重试';
+                if (error.message.includes('超时')) {
+                    errorMsg = 'API 超时，请稍后重试';
+                } else if (error.message.includes('网络错误')) {
+                    errorMsg = '网络错误，请检查连接';
+                }
+                
                 resultContainer.innerHTML = `
                     <div class="query-result-content">
                         <div class="query-result-item">
                             <div class="query-result-label">错误</div>
-                            <div class="query-result-value">查询失败，请稍后重试</div>
+                            <div class="query-result-value">${errorMsg}</div>
                         </div>
                     </div>
                 `;
@@ -377,19 +644,38 @@ function getDNSInfo() {
         fetchDomainData(input)
             .then(data => {
                 if (!data.Answer || data.Answer.length === 0) throw new Error("无解析记录");
-                const ipAddress = data.Answer[0].data;
+
+                // 优先使用第一个非特殊网段记录
+                const records = data.Answer.map(x => x.data).filter(Boolean);
+                let ipAddress = records.find(ip => !isSpecialIp(ip)) || records[0];
+
                 return fetchIPDataWithFallback(ipAddress);
             })
             .then(ipData => displayResult(ipData, ipData.ip))
-            .catch(error => {
+            .catch(async (error) => {
                 console.error("查询域名出错：", error);
+
+                // 直接输入地名时，自动尝试地图跳转（支持中文）
+                const jumped = await jumpToPlaceOnMap(input);
+                if (jumped) return;
+
                 const resultContainer = document.getElementById("query-result-container");
                 resultContainer.classList.add('active');
+                
+                let errorMsg = '查询失败，请检查域名是否正确';
+                if (error.message.includes('超时')) {
+                    errorMsg = 'DNS 查询超时，请稍后重试';
+                } else if (error.message.includes('网络错误')) {
+                    errorMsg = '网络错误，请检查连接';
+                } else if (error.message.includes('无解析记录')) {
+                    errorMsg = '域名无解析记录';
+                }
+                
                 resultContainer.innerHTML = `
                     <div class="query-result-content">
                         <div class="query-result-item">
                             <div class="query-result-label">错误</div>
-                            <div class="query-result-value">查询失败，请检查域名是否正确</div>
+                            <div class="query-result-value">${errorMsg}</div>
                         </div>
                     </div>
                 `;
@@ -403,10 +689,11 @@ function displayResult(data, input) {
     const resultContainer = document.getElementById("query-result-container");
     resultContainer.classList.add('active');
     
-    const city = data.city || 'N/A';
-    const region = data.region || 'N/A';
-    const country = data.country_name || 'N/A';
+    const city = toZhCity(data.city || '');
+    const region = data.region || '';
+    const country = toZhCountry(data.country_name || '');
     const org = data.org || 'N/A';
+    const locationText = [city, region, country].filter(Boolean).join('，') || '未知';
     
     resultContainer.innerHTML = `
         <div class="query-result-content">
@@ -416,7 +703,7 @@ function displayResult(data, input) {
             </div>
             <div class="query-result-item">
                 <div class="query-result-label">归属地</div>
-                <div class="query-result-value">${city}, ${region}, ${country}</div>
+                <div class="query-result-value">${locationText}</div>
             </div>
             <div class="query-result-item">
                 <div class="query-result-label">运营商</div>
@@ -485,6 +772,11 @@ function displayResult(data, input) {
         map.setView(targetLocation, zoomLevel);
     }
     saveToHistory(input);
+
+    // 用户查询域名/IP后，同步检测该目标IP质量
+    if (typeof runQualityCheckHandler === 'function') {
+        runQualityCheckHandler(data.ip || input);
+    }
 }
 
 
@@ -509,12 +801,9 @@ function updateHistoryList() {
     });
 }
 
-async function searchLocationOnMap() {
-    const input = document.getElementById("domain-input").value.trim();
-    if (input === "") return;
-
+async function jumpToPlaceOnMap(place) {
     try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1`);
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(place)}&format=json&limit=1&accept-language=zh-CN,zh`);
         const data = await response.json();
 
         if (data && data.length > 0) {
@@ -522,23 +811,366 @@ async function searchLocationOnMap() {
             const coordinates = [parseFloat(location.lat), parseFloat(location.lon)];
             map.setView(coordinates, 12);
 
-            if (queryMarker) {
-                queryMarker.remove();
-            }
-            if (queryLine) {
-                queryLine.remove();
-            }
-            queryMarker = L.marker(coordinates, { icon: redIcon }).addTo(map).bindPopup(location.display_name).openPopup();
+            if (queryMarker) queryMarker.remove();
+            if (queryLine) queryLine.remove();
+
+            const popup = `<b>地图跳转</b><br>${location.display_name}`;
+            queryMarker = L.marker(coordinates, { icon: redIcon }).addTo(map).bindPopup(popup).openPopup();
+
+            const resultContainer = document.getElementById("query-result-container");
+            resultContainer.classList.add('active');
+            resultContainer.innerHTML = `
+                <div class="query-result-content">
+                    <div class="query-result-item">
+                        <div class="query-result-label">地图跳转</div>
+                        <div class="query-result-value">${place}</div>
+                    </div>
+                    <div class="query-result-item">
+                        <div class="query-result-label">坐标</div>
+                        <div class="query-result-value">${coordinates[0].toFixed(6)}, ${coordinates[1].toFixed(6)}</div>
+                    </div>
+                </div>
+            `;
+            return true;
         }
     } catch (error) {
-        console.error('Error with location search:', error);
+        console.error('地图跳转失败:', error);
     }
+    return false;
+}
+
+async function searchLocationOnMap() {
+    const input = document.getElementById("domain-input").value.trim();
+    if (input === "") return;
+    return jumpToPlaceOnMap(input);
 }
 
 // 刷新按钮事件
-document.addEventListener('DOMContentLoaded', () => {
-    // 这里的事件监听器已经移到 window.addEventListener("load") 中
-});
+// 已移到 window.addEventListener("load") 中
+
+// IP 质量检测相关函数
+function calcPurityScore(info) {
+    let score = 100;
+
+    // 强风险信号
+    if (info.isTor) score -= 45;
+    if (info.isProxy) score -= 30;
+    if (info.isVpn) score -= 20;
+    if (info.isHosting) score -= 25;
+
+    // 网络类型影响
+    const networkType = normalizeNetworkType(info);
+    if (networkType === '机房') score -= 18;
+    if (networkType === '家宽') score += 6;
+    if (networkType === '移动网络') score -= 8;
+    if (networkType === '未知') score -= 10;
+
+    // 组织特征微调（避免大量固定分）
+    const org = (info.companyType || '').toLowerCase();
+    const dcHints = ['cloud', 'aws', 'azure', 'gcp', 'oracle', 'digitalocean', 'linode', 'vultr', 'hosting', 'server'];
+    const ispHints = ['unicom', 'telecom', 'cmcc', '移动', '联通', '电信', 'broadband', 'residential'];
+
+    if (dcHints.some(k => org.includes(k))) score -= 10;
+    if (ispHints.some(k => org.includes(k))) score += 4;
+
+    // 信息不足时降分（防止动不动100）
+    const weakSignals = [info.isProxy, info.isVpn, info.isTor, info.isHosting].every(v => !v);
+    if (weakSignals && networkType === '未知') score -= 8;
+
+    score = Math.max(0, Math.min(100, score));
+    return score;
+}
+
+function getPurityLevel(score) {
+    if (score >= 85) return { text: '纯净', cls: 'good' };
+    if (score >= 60) return { text: '一般', cls: 'warn' };
+    return { text: '风险', cls: 'bad' };
+}
+
+
+function isSpecialIp(ip) {
+    if (!ip) return false;
+    const v = String(ip).trim().toLowerCase();
+
+    // IPv6 special/local（不把全球单播 IPv6 当特殊）
+    if (v.includes(':')) {
+        if (v === '::1') return true;
+        if (v.startsWith('fc') || v.startsWith('fd')) return true; // ULA
+        if (v.startsWith('fe8') || v.startsWith('fe9') || v.startsWith('fea') || v.startsWith('feb')) return true; // link-local fe80::/10
+        return false;
+    }
+
+    const m = v.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return false;
+    const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]);
+
+    // RFC1918 / loopback / link-local / CGNAT / benchmark / TEST-NET
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15
+    if (a === 192 && b === 0 && c === 2) return true;
+    if (a === 198 && b === 51 && c === 100) return true;
+    if (a === 203 && b === 0 && c === 113) return true;
+
+    return false;
+}
+
+function normalizeNetworkType(info) {
+    if (isSpecialIp(info.ip)) return '特殊网络';
+
+    const nt = (info.networkType || '').toLowerCase();
+    const ct = (info.companyType || '').toLowerCase();
+    const asn = (info.asn || '').toLowerCase();
+    const all = `${nt} ${ct} ${asn}`;
+
+    // 1) 先判移动网络（优先级高于家宽）
+    const mobileKeywords = [
+        'wireless', 'cellular', 'lte', '5g', '4g', '3g',
+        'verizon wireless', 'at&t mobility', 't-mobile', 'jio', 'airtel'
+    ];
+    if (mobileKeywords.some(k => all.includes(k))) return '移动网络';
+
+    // 中国移动在很多场景是家宽出口，默认按家宽；仅明确无线特征时才判移动网络
+    if ((all.includes('china mobile') || all.includes('chinamobile') || all.includes('中国移动') || all.includes('cmcc'))
+        && !mobileKeywords.some(k => all.includes(k))) {
+        return '家宽';
+    }
+
+    // 2) 再判机房/云厂商
+    const datacenterKeywords = [
+        'datacenter', 'data center', 'hosting', 'hosted', 'colo', 'colocation', 'server', 'vps',
+        'cloud', 'clouds', 'cdn', 'edge',
+        // 国际云厂商
+        'aws', 'amazon web services', 'azure', 'gcp', 'google cloud', 'oracle cloud',
+        'digitalocean', 'linode', 'vultr', 'scaleway', 'ovh', 'hetzner', 'leaseweb', 'contabo',
+        'akamai', 'cloudflare', 'fastly',
+        // 国内云厂商
+        'huawei', 'huaweicloud', 'huawei cloud',
+        'alibaba', 'aliyun', 'alicloud', 'hangzhou alibaba',
+        'tencent cloud', 'tencent', 'ucloud', 'baidu cloud', 'kingsoft cloud', 'volcengine',
+        'facebook', 'meta', 'instagram', 'whatsapp',
+        'landups', 'choopa', 'm247', 'multacom', 'psychz', 'frantech', 'buyvm'
+    ];
+    if (datacenterKeywords.some(k => all.includes(k))) return '机房';
+
+    // 3) 家宽/固网 ISP
+    const residentialKeywords = [
+        'residential', 'broadband', '家庭', '宽带', 'home network',
+        // 中国
+        'china unicom', 'unicom', '中国联通', 'china telecom', 'telecom', '中国电信',
+        'chinanet', 'cnc', 'china netcom', 'china tietong', '鹏博士',
+        // 国际常见固网
+        'comcast', 'charter', 'cox', 'centurylink', 'lumen', 'bt', 'virgin media',
+        'deutsche telekom', 'orange', 'telefonica', 'vodafone', 'kddi', 'ntt', 'softbank'
+    ];
+    if (residentialKeywords.some(k => all.includes(k))) return '家宽';
+
+    // 4) 明确字段兜底
+    if (nt.includes('residential')) return '家宽';
+    if (nt.includes('mobile')) return '移动网络';
+    if (nt.includes('datacenter') || nt.includes('hosting') || nt.includes('cloud')) return '机房';
+
+    return '未知';
+}
+
+function setBadge(el, text, cls='neutral') {
+    if (!el) return;
+    el.className = `status-badge ${cls}`;
+    el.textContent = text;
+}
+
+function getConfidence(signals, meta = {}) {
+    const total = signals.length;
+    const attempted = meta.attempted || total;
+
+    if (total === 0) return { score: 20, text: '低', cls: 'bad' };
+
+    // 成功率
+    const successRate = total / Math.max(1, attempted);
+
+    // 一致性
+    const typeVotes = signals.map(s => normalizeNetworkType(s));
+    const majorTypeCount = Math.max(...['家宽', '机房', '移动网络', '未知'].map(t => typeVotes.filter(v => v === t).length));
+    const agreement = majorTypeCount / total;
+
+    // 完整度
+    const completeness = signals.map(s => {
+        let c = 0;
+        if (s.ip) c += 1;
+        if (s.companyType) c += 1;
+        if (s.networkType) c += 1;
+        c += Number(!!s.isProxy) + Number(!!s.isVpn) + Number(!!s.isTor) + Number(!!s.isHosting);
+        return c / 7;
+    }).reduce((a,b)=>a+b,0) / total;
+
+    let confidenceScore = 25;
+    confidenceScore += successRate * 35;
+    confidenceScore += agreement * 25;
+    confidenceScore += completeness * 15;
+
+    confidenceScore = Math.round(Math.max(0, Math.min(100, confidenceScore)));
+
+    if (confidenceScore >= 75) return { score: confidenceScore, text: '高', cls: 'good' };
+    if (confidenceScore >= 55) return { score: confidenceScore, text: '中', cls: 'warn' };
+    return { score: confidenceScore, text: '低', cls: 'bad' };
+}
+
+function mergeQualitySignals(signals, meta = {}) {
+    const merged = {
+        ip: signals[0]?.ip || null,
+        isProxy: false,
+        isVpn: false,
+        isTor: false,
+        isHosting: false,
+        networkType: null,
+        companyType: null,
+        asn: null,
+        confidence: getConfidence(signals, meta)
+    };
+
+    const vote = (key) => {
+        const yes = signals.filter(s => !!s[key]).length;
+        return yes > (signals.length / 2);
+    };
+
+    merged.isProxy = vote('isProxy');
+    merged.isVpn = vote('isVpn');
+    merged.isTor = vote('isTor');
+    merged.isHosting = vote('isHosting');
+
+    const types = signals.map(s => normalizeNetworkType(s));
+    const priority = ['机房', '家宽', '移动网络', '未知'];
+    let bestType = '未知';
+    let bestCount = -1;
+    for (const t of priority) {
+        const c = types.filter(x => x === t).length;
+        if (c > bestCount) {
+            bestCount = c;
+            bestType = t;
+        }
+    }
+    merged.networkType = bestType;
+
+    const company = signals.map(s => s.companyType).find(Boolean);
+    merged.companyType = company || null;
+
+    const asn = signals.map(s => s.asn).find(Boolean);
+    merged.asn = asn || null;
+
+    return merged;
+}
+
+function getIpOriginType(info) {
+    // 经验规则：出现代理/隧道/机房特征时视为“广播IP”，否则视为“原生IP”
+    const networkType = info.networkType || normalizeNetworkType(info);
+    const hasRelaySignals = !!(info.isProxy || info.isVpn || info.isTor || info.isHosting);
+    if (isSpecialIp(info.ip)) return '广播IP';
+    if (hasRelaySignals) return '广播IP';
+    if (networkType === '机房') return '广播IP';
+    return '原生IP';
+}
+
+function renderPurityUI(info) {
+    const score = calcPurityScore(info);
+    const level = getPurityLevel(score);
+    const impurityScore = 100 - score; // 污染度：越低越好
+
+    const scoreEl = document.getElementById('purity-score');
+    const levelEl = document.getElementById('purity-level');
+    const progressFillEl = document.getElementById('purity-progress-fill');
+    const originEl = document.getElementById('ip-origin-badge');
+    const netEl = document.getElementById('network-type-badge');
+    const asnEl = document.getElementById('asn-text');
+
+    const confidenceProgressEl = document.getElementById('confidence-progress-fill');
+    const confidenceTextEl = document.getElementById('confidence-score-text');
+    const impurityProgressEl = document.getElementById('impurity-progress-fill');
+    const impurityTextEl = document.getElementById('impurity-score-text');
+
+    if (scoreEl) scoreEl.textContent = `${score}`;
+    if (levelEl) levelEl.textContent = `评级：${level.text}`;
+
+    if (progressFillEl) {
+        const percent = Math.max(0, Math.min(100, score));
+        progressFillEl.style.width = `${percent}%`;
+    }
+
+    const networkType = info.networkType || normalizeNetworkType(info);
+    const originType = getIpOriginType(info);
+    if (originEl) setBadge(originEl, originType, originType === '原生IP' ? 'good' : 'warn');
+    setBadge(netEl, networkType, networkType === '家宽' ? 'good' : networkType === '机房' ? 'bad' : networkType === '特殊网络' ? 'warn' : 'warn');
+    if (asnEl) asnEl.textContent = `ASN: ${info.asn || '未知'}`;
+
+    const visualPercent = (v) => {
+        const clamped = Math.max(0, Math.min(100, Number(v) || 0));
+        return clamped === 0 ? 2 : clamped; // 0 分也保留可见色条
+    };
+
+    const riskColor = (v) => {
+        const n = Math.max(0, Math.min(100, Number(v) || 0));
+        if (n >= 70) return '#ef4444'; // 高风险红
+        if (n >= 40) return '#f59e0b'; // 中风险黄
+        return '#22c55e'; // 低风险绿
+    };
+
+
+
+    const conf = info.confidence || { score: 60, text: '中', cls: 'warn' };
+    if (confidenceProgressEl) confidenceProgressEl.style.width = `${visualPercent(conf.score || 60)}%`;
+    if (confidenceTextEl) confidenceTextEl.textContent = `${Math.round(conf.score || 60)} (${conf.text})`;
+
+    if (impurityProgressEl) {
+        impurityProgressEl.style.width = `${visualPercent(impurityScore)}%`;
+        impurityProgressEl.style.background = riskColor(impurityScore); // 污染高红低绿
+    }
+    if (impurityTextEl) impurityTextEl.textContent = `${Math.round(impurityScore)}`;
+}
+
+async function fetchIpQuality(ip='') {
+    // 需求：默认检测国内IP；用户查询域名/IP时同步检测该目标IP
+    const targetIp = ip || domesticIp || currentPublicIp || exitNodeIp || '';
+    const errors = [];
+    const signals = [];
+
+    if (qualityCache.data && qualityCache.ip === targetIp && Date.now() - qualityCache.ts < 30000) {
+        return qualityCache.data;
+    }
+
+    for (const p of qualityApiProviders) {
+        try {
+            const res = await fetchWithTimeout(p.url(targetIp), {
+                headers: { 'Accept': 'application/json' }
+            }, 10000);
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const raw = await res.json();
+            if (p.name === 'ipwho.is' && raw && raw.success === false) {
+                throw new Error(raw.message || 'ipwho.is 查询失败');
+            }
+
+            const info = p.parse(raw);
+            if (!info.ip) throw new Error('返回数据缺少 IP 地址');
+
+            signals.push(info);
+        } catch (e) {
+            console.warn(`✗ ${p.name} 失败: ${e.message}`);
+            errors.push(`${p.name}: ${e.message}`);
+        }
+    }
+
+    if (signals.length === 0) {
+        throw new Error(errors.join(' | '));
+    }
+
+    const merged = mergeQualitySignals(signals, { attempted: qualityApiProviders.length });
+    qualityCache = { ip: targetIp, ts: Date.now(), data: merged };
+    return merged;
+}
 
 // 初始化服务连通性测试
 function initServiceConnectivity() {
@@ -580,8 +1212,39 @@ function initServiceConnectivity() {
 
 // 测试所有服务
 async function testAllServices() {
-    for (const service of globalServices) {
-        testService(service);
+    const concurrency = 6;
+    for (let i = 0; i < globalServices.length; i += concurrency) {
+        const chunk = globalServices.slice(i, i + concurrency);
+        await Promise.all(chunk.map(s => testService(s)));
+    }
+}
+
+// 通用 URL 探测函数
+async function probeUrl(url, timeoutMs = 8000) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        
+        const start = performance.now();
+        
+        await fetch(url, {
+            method: 'HEAD',
+            mode: 'no-cors',
+            cache: 'no-cache',
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        const latency = Math.round(performance.now() - start);
+        
+        return { status: 'online', latency };
+        
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            return { status: 'offline', error: '超时' };
+        }
+        // 其他非超时异常记为 unknown
+        return { status: 'unknown', error: error.message };
     }
 }
 
@@ -597,39 +1260,19 @@ async function testService(service) {
     statusDot.className = 'service-status loading';
     latencyElem.textContent = '测试中...';
     
-    try {
-        const startTime = performance.now();
-        
-        // 使用 fetch 测试连通性和延迟
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
-        
-        const response = await fetch(service.url, {
-            method: 'HEAD',
-            mode: 'no-cors',
-            cache: 'no-cache',
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        const endTime = performance.now();
-        const latency = Math.round(endTime - startTime);
-        
+    const start = performance.now();
+    const result = await probeUrl(service.url, 8000);
+    const latency = Math.round(performance.now() - start);
+    
+    if (result.status === 'online') {
         statusDot.className = 'service-status online';
         latencyElem.textContent = `${latency}ms`;
-        
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            statusDot.className = 'service-status offline';
-            latencyElem.textContent = '超时';
-        } else {
-            // no-cors 模式下，即使成功也可能抛出错误，但我们可以测量延迟
-            const endTime = performance.now();
-            const latency = Math.round(endTime - performance.now() + 100); // 估算
-            
-            statusDot.className = 'service-status online';
-            latencyElem.textContent = `${latency}ms`;
-        }
+    } else if (result.status === 'offline') {
+        statusDot.className = 'service-status offline';
+        latencyElem.textContent = result.error || '超时';
+    } else {
+        statusDot.className = 'service-status unknown';
+        latencyElem.textContent = '--';
     }
 }
 
@@ -659,9 +1302,11 @@ window.addEventListener("load", () => {
                 }, 1000);
             }
             
+            qualityCache = { ip: null, ts: 0, data: null };
             getUserIP();
             getBlockedSiteIP();
             getResultData();
+            if (typeof runQualityCheckHandler === 'function') runQualityCheckHandler();
         });
     }
     
@@ -680,6 +1325,51 @@ window.addEventListener("load", () => {
             testAllServices();
         });
     }
+    
+    // IP 质量检测初始化
+    async function runQualityCheck(targetIp = '') {
+        // 设置加载状态
+        const scoreEl = document.getElementById('purity-score');
+        const levelEl = document.getElementById('purity-level');
+        if (scoreEl) scoreEl.textContent = '--';
+        if (levelEl) levelEl.textContent = targetIp ? `评级：检测中（${targetIp}）...` : '评级：检测中...';
+
+        try {
+            const info = await fetchIpQuality(targetIp);
+            renderPurityUI(info);
+        } catch (e) {
+            console.error('IP质量检测失败:', e);
+
+            // 显示友好的错误信息
+            if (scoreEl) scoreEl.textContent = '--';
+            if (levelEl) {
+                if (e.message.includes('超时')) {
+                    levelEl.textContent = 'API 超时，请稍后重试';
+                } else if (e.message.includes('网络错误')) {
+                    levelEl.textContent = '网络错误，请检查连接';
+                } else {
+                    levelEl.textContent = '检测失败，请稍后重试';
+                }
+            }
+
+            setBadge(document.getElementById('network-type-badge'), '检测失败', 'neutral');
+            setBadge(document.getElementById('ip-origin-badge'), '检测失败', 'neutral');
+            const asnEl = document.getElementById('asn-text');
+            if (asnEl) asnEl.textContent = 'ASN: 检测失败';
+            const confidenceTextEl = document.getElementById('confidence-score-text');
+            const impurityTextEl = document.getElementById('impurity-score-text');
+            const confidenceProgressEl = document.getElementById('confidence-progress-fill');
+            const impurityProgressEl = document.getElementById('impurity-progress-fill');
+            if (confidenceTextEl) confidenceTextEl.textContent = '--';
+            if (impurityTextEl) impurityTextEl.textContent = '--';
+            if (confidenceProgressEl) confidenceProgressEl.style.width = '0%';
+            if (impurityProgressEl) impurityProgressEl.style.width = '0%';
+        }
+    }
+
+    runQualityCheckHandler = runQualityCheck;
+    runQualityCheck();
+
     
     // 初始化 Lucide 图标
     if (typeof lucide !== 'undefined') {

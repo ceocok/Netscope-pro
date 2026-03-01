@@ -85,6 +85,65 @@
             <!-- Query Result -->
             <div id="query-result-container" class="query-result"></div>
 
+            <!-- IP Quality Detection (moved between query and map) -->
+            <div class="quality-section">
+                <div class="section-header compact">
+                    <div class="section-title">
+                        <i data-lucide="shield-check"></i>
+                        <h2>IP 质量检测</h2>
+                    </div>
+                </div>
+
+                <div class="quality-content compact">
+                    <div class="purity-bar-card">
+                        <div class="purity-top-row">
+                            <div class="score-label" id="purity-level">评级：检测中...</div>
+                            <div class="score-value" id="purity-score">--</div>
+                        </div>
+                        <div class="purity-progress" id="purity-progress">
+                            <div class="purity-progress-fill" id="purity-progress-fill"></div>
+                        </div>
+                        <div class="purity-scale">
+                            <span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+                        </div>
+
+                    </div>
+
+                    <div class="quality-attr-card">
+                        <div class="badge-label ip-attr-title">IP属性</div>
+                        <div class="network-meta-row">
+                            <div class="status-badge neutral" id="ip-origin-badge">来源检测中...</div>
+                            <div class="status-badge neutral" id="network-type-badge">类型检测中...</div>
+                        </div>
+                        <div class="asn-text" id="asn-text">ASN: 检测中...</div>
+                    </div>
+
+                    <div class="quality-metric-card">
+                        <div class="metric-list">
+                            <div class="metric-row">
+                                <div class="metric-head">
+                                    <span>置信度</span>
+                                    <span id="confidence-score-text">--</span>
+                                </div>
+                                <div class="metric-bar metric-confidence">
+                                    <div class="metric-fill" id="confidence-progress-fill"></div>
+                                </div>
+                            </div>
+
+                            <div class="metric-row">
+                                <div class="metric-head">
+                                    <span>污染度(越低越好)</span>
+                                    <span id="impurity-score-text">--</span>
+                                </div>
+                                <div class="metric-bar metric-impurity">
+                                    <div class="metric-fill" id="impurity-progress-fill"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Map Container -->
             <div class="map-wrapper">
                 <div id="map-container"></div>
