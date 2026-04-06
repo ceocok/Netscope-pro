@@ -640,6 +640,13 @@ body {
     margin: 0;
 }
 
+.section-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
 .retest-btn {
     display: flex;
     align-items: center;
