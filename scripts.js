@@ -6,6 +6,7 @@ let userLocation = null;
 let currentPublicIp = null;
 let exitNodeIp = null;
 let domesticIp = null;
+let domesticIpAddress = '';
 let runQualityCheckHandler = null;
 let qualityCache = { ip: null, ts: 0, data: null };
 
@@ -358,6 +359,7 @@ async function getResultData() {
         
         if (data.type === 'success' && data.ip && data.address) {
             domesticIp = data.ip;
+            domesticIpAddress = data.address.replace(/\//g, " ");
             const displayAddress = data.address.replace(/\//g, " ");
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
@@ -935,13 +937,14 @@ function calcPurityScore(info) {
     const networkType = normalizeNetworkType(info);
     if (networkType === '机房') score -= 18;
     if (networkType === '家宽') score += 6;
+    if (networkType === '运营商网络') score -= 6;
     if (networkType === '移动网络') score -= 8;
     if (networkType === '未知') score -= 10;
 
     // 组织特征微调（避免大量固定分）
     const org = (info.companyType || '').toLowerCase();
     const dcHints = ['cloud', 'aws', 'azure', 'gcp', 'oracle', 'digitalocean', 'linode', 'vultr', 'hosting', 'server'];
-    const ispHints = ['unicom', 'telecom', 'cmcc', '移动', '联通', '电信', 'broadband', 'residential'];
+    const ispHints = ['broadband', 'residential', '家庭', '宽带', 'home network'];
 
     if (dcHints.some(k => org.includes(k))) score -= 10;
     if (ispHints.some(k => org.includes(k))) score += 4;
@@ -998,20 +1001,15 @@ function normalizeNetworkType(info) {
     const nt = (info.networkType || '').toLowerCase();
     const ct = (info.companyType || '').toLowerCase();
     const asn = (info.asn || '').toLowerCase();
-    const all = `${nt} ${ct} ${asn}`;
+    const localHint = (info.localHint || '').toLowerCase();
+    const all = `${nt} ${ct} ${asn} ${localHint}`;
 
-    // 1) 先判移动网络（优先级高于家宽）
+    // 1) 先判移动网络（优先级高于其他类型）
     const mobileKeywords = [
         'wireless', 'cellular', 'lte', '5g', '4g', '3g',
         'verizon wireless', 'at&t mobility', 't-mobile', 'jio', 'airtel'
     ];
     if (mobileKeywords.some(k => all.includes(k))) return '移动网络';
-
-    // 中国移动在很多场景是家宽出口，默认按家宽；仅明确无线特征时才判移动网络
-    if ((all.includes('china mobile') || all.includes('chinamobile') || all.includes('中国移动') || all.includes('cmcc'))
-        && !mobileKeywords.some(k => all.includes(k))) {
-        return '家宽';
-    }
 
     // 2) 再判机房/云厂商
     const datacenterKeywords = [
@@ -1030,19 +1028,33 @@ function normalizeNetworkType(info) {
     ];
     if (datacenterKeywords.some(k => all.includes(k))) return '机房';
 
-    // 3) 家宽/固网 ISP
+    const carrierKeywords = [
+        'china mobile', 'chinamobile', '中国移动', 'cmcc',
+        'china unicom', '中国联通', 'unicom',
+        'china telecom', '中国电信', 'telecom', 'chinanet',
+        'china netcom', 'china tietong', 'carrier',
+        'branch', 'province network', '省网', '联通', '电信', '移动'
+    ];
+
+    // 3) 当前本机国内 IP：结合 itdog 返回的地区/运营商信息，允许更大胆地识别为家宽
+    if (info.isCurrentDomesticIp && carrierKeywords.some(k => all.includes(k))) {
+        return '家宽';
+    }
+
+    // 4) 明确家宽/固网特征
     const residentialKeywords = [
         'residential', 'broadband', '家庭', '宽带', 'home network',
-        // 中国
-        'china unicom', 'unicom', '中国联通', 'china telecom', 'telecom', '中国电信',
-        'chinanet', 'cnc', 'china netcom', 'china tietong', '鹏博士',
+        'ftth', 'fiber to the home', 'dsl', 'adsl', 'pppoe',
         // 国际常见固网
         'comcast', 'charter', 'cox', 'centurylink', 'lumen', 'bt', 'virgin media',
         'deutsche telekom', 'orange', 'telefonica', 'vodafone', 'kddi', 'ntt', 'softbank'
     ];
     if (residentialKeywords.some(k => all.includes(k))) return '家宽';
 
-    // 4) 明确字段兜底
+    // 5) 运营商网络：大运营商 ASN / 分公司 / 省网，更接近承载网络或企业接入，不直接等价为家宽
+    if (carrierKeywords.some(k => all.includes(k)) || nt === 'isp') return '运营商网络';
+
+    // 6) 明确字段兜底
     if (nt.includes('residential')) return '家宽';
     if (nt.includes('mobile')) return '移动网络';
     if (nt.includes('datacenter') || nt.includes('hosting') || nt.includes('cloud')) return '机房';
@@ -1067,7 +1079,7 @@ function getConfidence(signals, meta = {}) {
 
     // 一致性
     const typeVotes = signals.map(s => normalizeNetworkType(s));
-    const majorTypeCount = Math.max(...['家宽', '机房', '移动网络', '未知'].map(t => typeVotes.filter(v => v === t).length));
+    const majorTypeCount = Math.max(...['家宽', '运营商网络', '机房', '移动网络', '未知'].map(t => typeVotes.filter(v => v === t).length));
     const agreement = majorTypeCount / total;
 
     // 完整度
@@ -1116,7 +1128,7 @@ function mergeQualitySignals(signals, meta = {}) {
     merged.isHosting = vote('isHosting');
 
     const types = signals.map(s => normalizeNetworkType(s));
-    const priority = ['机房', '家宽', '移动网络', '未知'];
+    const priority = ['机房', '运营商网络', '家宽', '移动网络', '未知'];
     let bestType = '未知';
     let bestCount = -1;
     for (const t of priority) {
@@ -1228,6 +1240,11 @@ async function fetchIpQuality(ip='') {
 
             const info = p.parse(raw);
             if (!info.ip) throw new Error('返回数据缺少 IP 地址');
+
+            if (targetIp && targetIp === domesticIp) {
+                info.localHint = domesticIpAddress || '';
+                info.isCurrentDomesticIp = true;
+            }
 
             signals.push(info);
         } catch (e) {
