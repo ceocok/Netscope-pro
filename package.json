@@ -1,0 +1,14 @@
+{
+  "name": "ip-info-query",
+  "version": "1.0.0",
+  "description": "IP域名信息查询工具",
+  "scripts": {
+    "dev": "python3 -m http.server 8000",
+    "start": "python3 -m http.server 8000",
+    "build": "echo 'This is a static website, no build step required. Files are ready for deployment.'"
+  },
+  "keywords": ["ip", "dns", "query"],
+  "author": "",
+  "license": "MIT"
+}
+

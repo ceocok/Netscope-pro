@@ -235,6 +235,26 @@ async function getUserIP() {
                 city: data.city,
                 country_name: data.country_name
             })
+        },
+        {
+            name: 'itdog-ipv4',
+            url: 'https://ipv4_ct.itdog.cn',
+            parse: (data) => ({
+                ip: data?.type === 'success' ? data.ip : null,
+                city: null,
+                country_name: null,
+                location_text: data?.address ? data.address.replace(/\//g, ' ') : null
+            })
+        },
+        {
+            name: 'itdog-ipv6',
+            url: 'https://ipv6_ct.itdog.cn',
+            parse: (data) => ({
+                ip: data?.type === 'success' ? data.ip : null,
+                city: null,
+                country_name: null,
+                location_text: data?.address ? data.address.replace(/\//g, ' ') : null
+            })
         }
     ];
 
@@ -260,7 +280,7 @@ async function getUserIP() {
 
         currentPublicIp = data.ip;
         userIpElem.classList.remove('loading-shimmer');
-        const locationText = formatLocationZh(data.city, data.country_name);
+        const locationText = data.location_text || formatLocationZh(data.city, data.country_name);
         userIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
                                 <div style="font-size: 0.875rem; color: var(--text-secondary);">${locationText}</div>`;
     } catch (error) {
@@ -419,63 +439,75 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
     }
 }
 
+function hasValidCoordinate(value) {
+    return Number.isFinite(Number(value));
+}
 
-// IP查询API列表（按优先级排序，使用支持HTTPS和CORS的API）
+function parseLocationCoordinates(loc) {
+    if (!loc || typeof loc !== 'string' || !loc.includes(',')) {
+        return { latitude: null, longitude: null };
+    }
+
+    const [lat, lng] = loc.split(',');
+    const latitude = Number.parseFloat(lat);
+    const longitude = Number.parseFloat(lng);
+
+    return {
+        latitude: Number.isFinite(latitude) ? latitude : null,
+        longitude: Number.isFinite(longitude) ? longitude : null
+    };
+}
+
+function normalizeDnsName(value) {
+    if (!value) return '';
+    return String(value).trim().replace(/\.$/, '');
+}
+
+// IP查询API列表（按优先级排序，仅保留浏览器端实测支持 HTTPS 和 CORS 的 API）
 const ipApiProviders = [
     {
-        name: 'ipapi.co',
-        getUrl: (ip) => ip ? `https://ipapi.co/${ip}/json/` : 'https://ipapi.co/json/',
+        name: 'ipapi.is',
+        getUrl: (ip) => ip ? `https://api.ipapi.is/?q=${encodeURIComponent(ip)}` : 'https://api.ipapi.is/',
         parseResponse: (data) => ({
-            ip: data.ip,
-            city: data.city,
-            region: data.region,
-            country_name: data.country_name,
-            org: data.org,
-            latitude: data.latitude,
-            longitude: data.longitude
+            ip: data.ip || null,
+            city: data.location?.city || null,
+            region: data.location?.state || null,
+            country_name: data.location?.country || null,
+            org: data.company?.name || data.asn?.org || 'N/A',
+            latitude: data.location?.latitude ?? null,
+            longitude: data.location?.longitude ?? null
         }),
-        rateLimit: 1000 // 添加延迟避免限流
+        rateLimit: 1000
     },
     {
-        name: 'ip-api.com',
-        getUrl: (ip) => ip ? `https://ip-api.com/json/${ip}` : 'https://ip-api.com/json/',
+        name: 'free.freeipapi.com',
+        getUrl: (ip) => ip ? `https://free.freeipapi.com/api/json/${encodeURIComponent(ip)}` : 'https://free.freeipapi.com/api/json/',
         parseResponse: (data) => ({
-            ip: data.query,
-            city: data.city,
-            region: data.regionName,
-            country_name: data.country,
-            org: data.isp,
-            latitude: data.lat,
-            longitude: data.lon
+            ip: data.ipAddress || null,
+            city: data.cityName || null,
+            region: data.regionName || null,
+            country_name: data.countryName || null,
+            org: data.asnOrganization || (data.isProxy ? 'Proxy' : 'N/A'),
+            latitude: data.latitude ?? null,
+            longitude: data.longitude ?? null
         }),
         rateLimit: 500
     },
     {
-        name: 'ipwho.is',
-        getUrl: (ip) => ip ? `https://ipwho.is/${ip}` : 'https://ipwho.is/',
-        parseResponse: (data) => ({
-            ip: data.ip,
-            city: data.city,
-            region: data.region,
-            country_name: data.country,
-            org: data.connection?.isp || 'N/A',
-            latitude: data.latitude,
-            longitude: data.longitude
-        }),
-        rateLimit: 500
-    },
-    {
-        name: 'freeipapi.com',
-        getUrl: (ip) => ip ? `https://freeipapi.com/api/json/${ip}` : 'https://freeipapi.com/api/json/',
-        parseResponse: (data) => ({
-            ip: data.ipAddress,
-            city: data.cityName,
-            region: data.regionName,
-            country_name: data.countryName,
-            org: data.isProxy ? 'Proxy' : 'N/A',
-            latitude: data.latitude,
-            longitude: data.longitude
-        }),
+        name: 'ipinfo.io',
+        getUrl: (ip) => ip ? `https://ipinfo.io/${encodeURIComponent(ip)}/json` : 'https://ipinfo.io/json',
+        parseResponse: (data) => {
+            const coords = parseLocationCoordinates(data.loc);
+            return {
+                ip: data.ip || null,
+                city: data.city || null,
+                region: data.region || null,
+                country_name: data.country || null,
+                org: data.org || 'N/A',
+                latitude: coords.latitude,
+                longitude: coords.longitude
+            };
+        },
         rateLimit: 500
     }
 ];
@@ -500,17 +532,17 @@ const qualityApiProviders = [
         })
     },
     {
-        name: 'ipwho.is',
-        url: (ip) => ip ? `https://ipwho.is/${encodeURIComponent(ip)}` : 'https://ipwho.is/',
+        name: 'free.freeipapi.com',
+        url: (ip) => ip ? `https://free.freeipapi.com/api/json/${encodeURIComponent(ip)}` : 'https://free.freeipapi.com/api/json/',
         parse: (d) => ({
-            ip: d.ip || null,
-            isProxy: !!(d.security?.proxy ?? d.security?.is_proxy),
-            isVpn: !!(d.security?.vpn ?? d.security?.is_vpn),
-            isTor: !!(d.security?.tor ?? d.security?.is_tor),
-            isHosting: !!(d.security?.hosting ?? d.security?.is_hosting),
-            networkType: d.connection?.type || null,
-            companyType: d.connection?.org || null,
-            asn: d.connection?.asn ? `AS${String(d.connection.asn).replace(/^AS/i, '')}` : null
+            ip: d.ipAddress || null,
+            isProxy: !!d.isProxy,
+            isVpn: false,
+            isTor: false,
+            isHosting: false,
+            networkType: null,
+            companyType: d.asnOrganization || null,
+            asn: d.asn ? `AS${String(d.asn).replace(/^AS/i, '')}` : null
         })
     }
 ];
@@ -546,7 +578,7 @@ async function fetchIPDataWithFallback(ip = '') {
             const parsedData = provider.parseResponse(data);
             
             // 验证返回的数据是否完整
-            if (!parsedData.ip || !parsedData.latitude || !parsedData.longitude) {
+            if (!parsedData.ip || !hasValidCoordinate(parsedData.latitude) || !hasValidCoordinate(parsedData.longitude)) {
                 throw new Error('返回数据不完整');
             }
             
@@ -583,37 +615,58 @@ function getDNSInfo() {
     }
 
     const fetchDomainData = async (domain) => {
-        // 优先 A（IPv4）
-        let responseA = await fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=A`, {}, 8000);
-        let dataA = await responseA.json();
+        const [responseCname, responseA, responseAAAA] = await Promise.all([
+            fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=CNAME`, {}, 8000),
+            fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=A`, {}, 8000),
+            fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=AAAA`, {}, 8000)
+        ]);
 
-        let responseAAAA = await fetchWithTimeout(`https://dns.alidns.com/resolve?name=${domain}&type=AAAA`, {}, 8000);
-        let dataAAAA = await responseAAAA.json();
+        const [dataCname, dataA, dataAAAA] = await Promise.all([
+            responseCname.json(),
+            responseA.json(),
+            responseAAAA.json()
+        ]);
 
-        const hasA = dataA.Answer && dataA.Answer.length > 0;
-        const hasAAAA = dataAAAA.Answer && dataAAAA.Answer.length > 0;
+        const answerSets = [dataCname, dataA, dataAAAA].map(packet => Array.isArray(packet?.Answer) ? packet.Answer : []);
+        const unique = (items) => [...new Set(items.filter(Boolean))];
 
-        if (hasA) {
-            // A 记录里优先取非特殊网段
-            const aRecords = dataA.Answer.map(x => x.data).filter(Boolean);
-            const nonSpecialA = aRecords.find(ip => !isSpecialIp(ip));
-            if (nonSpecialA) {
-                return { ...dataA, Answer: [{ ...dataA.Answer[0], data: nonSpecialA }] };
-            }
+        const cnameChain = unique(
+            answerSets
+                .flat()
+                .filter(record => record?.type === 5)
+                .map(record => normalizeDnsName(record.data))
+        );
 
-            // 如果 A 全是特殊网段且存在 AAAA，则回退 AAAA
-            if (hasAAAA) {
-                return dataAAAA;
-            }
+        const ipv4Records = unique(
+            answerSets
+                .flat()
+                .filter(record => record?.type === 1)
+                .map(record => record.data)
+        );
 
-            return dataA;
+        const ipv6Records = unique(
+            answerSets
+                .flat()
+                .filter(record => record?.type === 28)
+                .map(record => record.data)
+        );
+
+        const selectedIp =
+            ipv4Records.find(ip => !isSpecialIp(ip)) ||
+            ipv4Records[0] ||
+            ipv6Records.find(ip => !isSpecialIp(ip)) ||
+            ipv6Records[0] ||
+            null;
+
+        if (!selectedIp) {
+            throw new Error("无解析记录");
         }
 
-        if (hasAAAA) {
-            return dataAAAA;
-        }
-
-        return dataA;
+        return {
+            ipAddress: selectedIp,
+            cname: cnameChain[0] || null,
+            cnameChain
+        };
     };
 
     if (isIPv4 || isIPv6) {
@@ -642,16 +695,17 @@ function getDNSInfo() {
             });
     } else {
         fetchDomainData(input)
-            .then(data => {
-                if (!data.Answer || data.Answer.length === 0) throw new Error("无解析记录");
-
-                // 优先使用第一个非特殊网段记录
-                const records = data.Answer.map(x => x.data).filter(Boolean);
-                let ipAddress = records.find(ip => !isSpecialIp(ip)) || records[0];
-
-                return fetchIPDataWithFallback(ipAddress);
+            .then(async (domainData) => {
+                const ipData = await fetchIPDataWithFallback(domainData.ipAddress);
+                return {
+                    ...ipData,
+                    resolvedIp: domainData.ipAddress,
+                    queryDomain: input,
+                    cname: domainData.cname,
+                    cnameChain: domainData.cnameChain
+                };
             })
-            .then(ipData => displayResult(ipData, ipData.ip))
+            .then(ipData => displayResult(ipData, input))
             .catch(async (error) => {
                 console.error("查询域名出错：", error);
 
@@ -694,12 +748,31 @@ function displayResult(data, input) {
     const country = toZhCountry(data.country_name || '');
     const org = data.org || 'N/A';
     const locationText = [city, region, country].filter(Boolean).join('，') || '未知';
+    const resolvedIp = data.resolvedIp || data.ip || input;
+    const cnameText = data.cname || '';
+    const cnameChain = Array.isArray(data.cnameChain) ? data.cnameChain : [];
+    const hasMultiHopTrace = cnameChain.length > 1;
+    const traceChainText = hasMultiHopTrace ? cnameChain.join(' -> ') : '';
+    const traceChainHtml = traceChainText ? `
+            <div class="query-result-item">
+                <div class="query-result-label">解析链路</div>
+                <div class="query-result-value">${traceChainText}</div>
+            </div>
+    ` : '';
+    const cnameHtml = cnameChain.length === 1 && cnameText ? `
+            <div class="query-result-item">
+                <div class="query-result-label">CNAME</div>
+                <div class="query-result-value">${cnameText}</div>
+            </div>
+    ` : '';
     
     resultContainer.innerHTML = `
         <div class="query-result-content">
+            ${traceChainHtml}
+            ${cnameHtml}
             <div class="query-result-item">
                 <div class="query-result-label">IP 地址</div>
-                <div class="query-result-value">${data.ip || input}</div>
+                <div class="query-result-value">${resolvedIp}</div>
             </div>
             <div class="query-result-item">
                 <div class="query-result-label">归属地</div>
@@ -712,7 +785,7 @@ function displayResult(data, input) {
         </div>
     `;
 
-    if (!data.latitude || !data.longitude) {
+    if (!hasValidCoordinate(data.latitude) || !hasValidCoordinate(data.longitude)) {
         console.warn("查询结果缺少坐标信息，无法在地图上显示。");
         if (queryMarker) queryMarker.remove();
         if (queryLine) queryLine.remove();
