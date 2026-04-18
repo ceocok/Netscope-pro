@@ -62,8 +62,8 @@ const globalServices = [
     { name: 'Disney+', url: 'https://www.disneyplus.com/favicon.ico', category: 'international' },
     
     // 国际AI平台
-    { name: 'OpenAI', url: 'https://cdn.oaistatic.com/favicon.ico', category: 'international' },
-    { name: 'Claude', url: 'https://claude.ai/favicon.ico', category: 'international' },
+    { name: 'OpenAI', url: 'https://chat.openai.com/', category: 'international' },
+    { name: 'Claude', url: 'https://claude.ai/', category: 'international' },
     
     // 国际社交平台
     { name: 'Facebook', url: 'https://www.facebook.com/favicon.ico', category: 'international' },
@@ -1311,31 +1311,36 @@ async function testAllServices() {
 
 // 通用 URL 探测函数
 async function probeUrl(url, timeoutMs = 8000) {
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        
-        const start = performance.now();
-        
-        await fetch(url, {
-            method: 'HEAD',
-            mode: 'no-cors',
-            cache: 'no-cache',
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        const latency = Math.round(performance.now() - start);
-        
-        return { status: 'online', latency };
-        
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            return { status: 'offline', error: '超时' };
+    const attempts = [
+        { method: 'GET', mode: 'no-cors' },
+        { method: 'HEAD', mode: 'no-cors' }
+    ];
+
+    for (const attempt of attempts) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            const start = performance.now();
+
+            await fetch(url, {
+                method: attempt.method,
+                mode: attempt.mode,
+                cache: 'no-cache',
+                redirect: 'follow',
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+            const latency = Math.round(performance.now() - start);
+            return { status: 'online', latency, method: attempt.method };
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                return { status: 'offline', error: '超时' };
+            }
         }
-        // 其他非超时异常记为 unknown
-        return { status: 'unknown', error: error.message };
     }
+
+    return { status: 'unknown', error: '受浏览器策略限制' };
 }
 
 // 测试单个服务
@@ -1362,7 +1367,7 @@ async function testService(service) {
         latencyElem.textContent = result.error || '超时';
     } else {
         statusDot.className = 'service-status unknown';
-        latencyElem.textContent = '--';
+        latencyElem.textContent = result.error || '受限';
     }
 }
 
