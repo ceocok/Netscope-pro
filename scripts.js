@@ -340,6 +340,30 @@ async function getBlockedSiteIP() {
     }
 }
 
+async function fetchTextFromProviders(providers, timeoutMs = 8000) {
+    let lastErr = null;
+
+    for (const p of providers) {
+        try {
+            const response = await fetchWithTimeout(p.url, {
+                headers: { 'Accept': p.accept || 'text/plain' },
+                cache: 'no-store'
+            }, timeoutMs);
+
+            if (!response.ok) throw new Error(`${p.name}: HTTP ${response.status}`);
+
+            const text = (await response.text()).trim();
+            const parsed = p.parse ? p.parse(text) : text;
+            if (!parsed) throw new Error(`${p.name}: 返回为空`);
+            return parsed;
+        } catch (error) {
+            lastErr = error;
+        }
+    }
+
+    throw lastErr || new Error('所有 IP API 均不可用');
+}
+
 async function getResultData() {
     const resultElem = document.getElementById("result");
     resultElem.classList.add('loading-shimmer');
@@ -350,24 +374,29 @@ async function getResultData() {
             throw new Error('请先配置 Cloudflare Worker 国内 IP 查询接口');
         }
 
-        const directIpResp = await fetchWithTimeout('https://api.ipquery.io', {
-            headers: {
-                'Accept': 'text/plain'
-            },
-            cache: 'no-store'
-        }, 8000);
+        const [ipv4Result, ipv6Result] = await Promise.allSettled([
+            fetchTextFromProviders([
+                { name: 'ipv4.icanhazip.com', url: 'https://ipv4.icanhazip.com' },
+                { name: 'v4.ident.me', url: 'https://v4.ident.me' },
+                { name: 'ipv4.wtfismyip.com', url: 'https://ipv4.wtfismyip.com/text' },
+                { name: 'myip.ipip.net', url: 'https://myip.ipip.net', parse: (text) => text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || '' }
+            ]),
+            fetchTextFromProviders([
+                { name: 'v6.ident.me', url: 'https://v6.ident.me' },
+                { name: 'ipv6.icanhazip.com', url: 'https://ipv6.icanhazip.com' },
+                { name: 'api.ipquery.io', url: 'https://api.ipquery.io' }
+            ])
+        ]);
 
-        if (!directIpResp.ok) {
-            throw new Error(`HTTP ${directIpResp.status}`);
-        }
-
-        const directIp = (await directIpResp.text()).trim();
-        if (!directIp) {
-            throw new Error('api.ipquery.io 未返回 IP');
+        const ipv4 = ipv4Result.status === 'fulfilled' ? ipv4Result.value : '';
+        const ipv6 = ipv6Result.status === 'fulfilled' ? ipv6Result.value : '';
+        const lookupIp = ipv4 || ipv6;
+        if (!lookupIp) {
+            throw new Error('无法获取国内 IPv4/IPv6 地址');
         }
 
         const url = new URL(domesticIpApiUrl);
-        url.searchParams.set('ip', directIp);
+        url.searchParams.set('ip', lookupIp);
 
         const response = await fetchWithTimeout(url.toString(), {
             headers: {
@@ -384,13 +413,16 @@ async function getResultData() {
 
         if (data?.ret === 200 && data?.data?.ip) {
             const ipData = data.data;
-            domesticIp = ipData.ip;
+            domesticIp = lookupIp;
             domesticIpAddress = [ipData.country, ipData.prov, ipData.city, ipData.area, ipData.isp]
                 .filter(Boolean)
                 .join(' ');
             const displayAddress = domesticIpAddress || '未知';
-            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${ipData.ip}</div>
-                                    <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
+            const ipv4Text = ipv4 || 'IPv4 获取失败';
+            const ipv6Text = ipv6 || 'IPv6 获取失败';
+            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.15rem; line-height: 1.25;">IPv4：${ipv4Text}</div>
+                                    <div style="font-weight: 500; margin-bottom: 0.25rem; line-height: 1.25;">IPv6：${ipv6Text}</div>
+                                    <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.25;">${displayAddress}</div>`;
             if (typeof runQualityCheckHandler === 'function') {
                 runQualityCheckHandler();
             }
