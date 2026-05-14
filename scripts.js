@@ -165,6 +165,7 @@ function loadMapScenario() {
     
     getUserLocation();
     getUserIP().finally(() => getResultData());
+    getBlockedSiteIP();
     updateHistoryList();
     initServiceConnectivity();
 }
