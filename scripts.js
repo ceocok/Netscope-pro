@@ -238,13 +238,15 @@ async function getUserIP() {
             })
         },
         {
-            name: 'itdog-ipv4',
-            url: 'https://ipv4_ct.itdog.cn',
+            name: 'meituan-ipv4',
+            url: 'https://apimobile.meituan.com/locate/v2/ip/loc?rgeo=true&ip=',
             parse: (data) => ({
-                ip: data?.type === 'success' ? data.ip : null,
-                city: null,
-                country_name: null,
-                location_text: data?.address ? data.address.replace(/\//g, ' ') : null
+                ip: data?.ip || null,
+                city: data?.rgeo?.city || data?.rgeo?.district || null,
+                country_name: data?.rgeo?.country || null,
+                location_text: [data?.rgeo?.country, data?.rgeo?.province, data?.rgeo?.city, data?.rgeo?.district]
+                    .filter(Boolean)
+                    .join(' ')
             })
         },
         {
@@ -344,7 +346,22 @@ async function getResultData() {
     resultElem.classList.add('loading-shimmer');
     
     try {
-        const response = await fetchWithTimeout("https://ipv4_ct.itdog.cn", {
+        const ipResp = await fetchWithTimeout("https://api.ipify.org?format=json", {
+            headers: {
+                'Accept': 'application/json'
+            }
+        }, 8000);
+        
+        if (!ipResp.ok) {
+            throw new Error(`HTTP ${ipResp.status}`);
+        }
+        
+        const ipData = await ipResp.json();
+        if (!ipData.ip) {
+            throw new Error('无法获取当前公网 IP');
+        }
+
+        const response = await fetchWithTimeout(`https://apimobile.meituan.com/locate/v2/ip/loc?rgeo=true&ip=${encodeURIComponent(ipData.ip)}`, {
             headers: {
                 'Accept': 'application/json'
             }
@@ -357,10 +374,12 @@ async function getResultData() {
         const data = await response.json();
         resultElem.classList.remove('loading-shimmer');
         
-        if (data.type === 'success' && data.ip && data.address) {
+        if (data.ip) {
             domesticIp = data.ip;
-            domesticIpAddress = data.address.replace(/\//g, " ");
-            const displayAddress = data.address.replace(/\//g, " ");
+            domesticIpAddress = [data?.rgeo?.country, data?.rgeo?.province, data?.rgeo?.city, data?.rgeo?.district]
+                .filter(Boolean)
+                .join(' ');
+            const displayAddress = domesticIpAddress || '未知';
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
             if (typeof runQualityCheckHandler === 'function') {
@@ -368,7 +387,7 @@ async function getResultData() {
             }
         } else {
             const errorMsg = data.message || '返回数据格式不正确';
-            console.error("itdog API error:", errorMsg);
+            console.error("meituan IP API error:", errorMsg, data);
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
         }
