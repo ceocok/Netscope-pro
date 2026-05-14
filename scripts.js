@@ -164,9 +164,7 @@ function loadMapScenario() {
     }).addTo(map);
     
     getUserLocation();
-    getUserIP();
-    getBlockedSiteIP();
-    getResultData();
+    getUserIP().finally(() => getResultData());
     updateHistoryList();
     initServiceConnectivity();
 }
@@ -238,13 +236,13 @@ async function getUserIP() {
             })
         },
         {
-            name: 'meituan-ipv4',
-            url: 'https://apimobile.meituan.com/locate/v2/ip/loc?rgeo=true&ip=',
+            name: 'ip9.com.cn',
+            url: 'https://ip9.com.cn/get',
             parse: (data) => ({
-                ip: data?.ip || null,
-                city: data?.rgeo?.city || data?.rgeo?.district || null,
-                country_name: data?.rgeo?.country || null,
-                location_text: [data?.rgeo?.country, data?.rgeo?.province, data?.rgeo?.city, data?.rgeo?.district]
+                ip: data?.ret === 200 ? data?.data?.ip : null,
+                city: data?.data?.city || data?.data?.prov || null,
+                country_name: data?.data?.country || null,
+                location_text: [data?.data?.country, data?.data?.prov, data?.data?.city, data?.data?.area, data?.data?.isp]
                     .filter(Boolean)
                     .join(' ')
             })
@@ -346,48 +344,58 @@ async function getResultData() {
     resultElem.classList.add('loading-shimmer');
     
     try {
-        const ipResp = await fetchWithTimeout("https://api.ipify.org?format=json", {
-            headers: {
-                'Accept': 'application/json'
-            }
-        }, 8000);
-        
-        if (!ipResp.ok) {
-            throw new Error(`HTTP ${ipResp.status}`);
-        }
-        
-        const ipData = await ipResp.json();
-        if (!ipData.ip) {
-            throw new Error('无法获取当前公网 IP');
+        const domesticIpApiUrl = window.NETSCOPE_CONFIG?.domesticIpApiUrl;
+        if (!domesticIpApiUrl || domesticIpApiUrl.includes('YOUR_WORKER_SUBDOMAIN')) {
+            throw new Error('请先配置 Cloudflare Worker 国内 IP 查询接口');
         }
 
-        const response = await fetchWithTimeout(`https://apimobile.meituan.com/locate/v2/ip/loc?rgeo=true&ip=${encodeURIComponent(ipData.ip)}`, {
+        const directIpResp = await fetchWithTimeout('https://api.ipquery.io', {
+            headers: {
+                'Accept': 'text/plain'
+            },
+            cache: 'no-store'
+        }, 8000);
+
+        if (!directIpResp.ok) {
+            throw new Error(`HTTP ${directIpResp.status}`);
+        }
+
+        const directIp = (await directIpResp.text()).trim();
+        if (!directIp) {
+            throw new Error('api.ipquery.io 未返回 IP');
+        }
+
+        const url = new URL(domesticIpApiUrl);
+        url.searchParams.set('ip', directIp);
+
+        const response = await fetchWithTimeout(url.toString(), {
             headers: {
                 'Accept': 'application/json'
             }
         }, 8000);
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const data = await response.json();
         resultElem.classList.remove('loading-shimmer');
-        
-        if (data.ip) {
-            domesticIp = data.ip;
-            domesticIpAddress = [data?.rgeo?.country, data?.rgeo?.province, data?.rgeo?.city, data?.rgeo?.district]
+
+        if (data?.ret === 200 && data?.data?.ip) {
+            const ipData = data.data;
+            domesticIp = ipData.ip;
+            domesticIpAddress = [ipData.country, ipData.prov, ipData.city, ipData.area, ipData.isp]
                 .filter(Boolean)
                 .join(' ');
             const displayAddress = domesticIpAddress || '未知';
-            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
+            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${ipData.ip}</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${displayAddress}</div>`;
             if (typeof runQualityCheckHandler === 'function') {
                 runQualityCheckHandler();
             }
         } else {
-            const errorMsg = data.message || '返回数据格式不正确';
-            console.error("meituan IP API error:", errorMsg, data);
+            const errorMsg = data?.msg || data?.message || '返回数据格式不正确';
+            console.error("ip9 国内 IP API error:", errorMsg, data);
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
         }
