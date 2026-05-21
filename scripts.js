@@ -263,18 +263,6 @@ async function getUserIP() {
             })
         },
         {
-            name: 'ip9.com.cn',
-            url: 'https://ip9.com.cn/get',
-            parse: (data) => ({
-                ip: data?.ret === 200 ? data?.data?.ip : null,
-                city: data?.data?.city || data?.data?.prov || null,
-                country_name: data?.data?.country || null,
-                location_text: [data?.data?.country, data?.data?.prov, data?.data?.city, data?.data?.area, data?.data?.isp]
-                    .filter(Boolean)
-                    .join(' ')
-            })
-        },
-        {
             name: 'itdog-ipv6',
             url: 'https://ipv6_ct.itdog.cn',
             parse: (data) => ({
@@ -395,16 +383,35 @@ async function getResultData() {
     resultElem.classList.add('loading-shimmer');
     
     try {
-        const domesticIpApiUrl = window.NETSCOPE_CONFIG?.domesticIpApiUrl;
-        if (!domesticIpApiUrl || domesticIpApiUrl.includes('YOUR_WORKER_SUBDOMAIN')) {
-            throw new Error('请先配置国内 IP 查询接口');
-        }
-
         const ipv4Promise = fetchTextFromProviders([
-            { name: 'ipv4.icanhazip.com', url: 'https://ipv4.icanhazip.com' },
-            { name: 'v4.ident.me', url: 'https://v4.ident.me' },
-            { name: 'ipv4.wtfismyip.com', url: 'https://ipv4.wtfismyip.com/text' },
-            { name: 'myip.ipip.net', url: 'https://myip.ipip.net', parse: (text) => text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || '' }
+            {
+                name: 'myip.ipip.net',
+                url: 'https://myip.ipip.net',
+                parse: (text) => {
+                    const ip = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || '';
+                    const locationText = text
+                        .replace(/^当前\s*IP[：:]\s*/i, '')
+                        .replace(ip, '')
+                        .replace(/来自于[：:]?/g, '')
+                        .trim();
+                    return ip ? { ip, locationText } : null;
+                }
+            },
+            {
+                name: 'ipv4.wtfismyip.com',
+                url: 'https://ipv4.wtfismyip.com/text',
+                parse: (text) => ({ ip: text.trim(), locationText: '' })
+            },
+            {
+                name: 'v4.ident.me',
+                url: 'https://v4.ident.me',
+                parse: (text) => ({ ip: text.trim(), locationText: '' })
+            },
+            {
+                name: 'ipv4.icanhazip.com',
+                url: 'https://ipv4.icanhazip.com',
+                parse: (text) => ({ ip: text.trim(), locationText: '' })
+            }
         ]);
         const ipv6Promise = fetchTextFromProviders([
             { name: 'v6.ident.me', url: 'https://v6.ident.me' },
@@ -412,53 +419,29 @@ async function getResultData() {
             { name: 'api.ipquery.io', url: 'https://api.ipquery.io' }
         ]);
 
-        // 国内 IP 归属地优先依赖 IPv4。不要等待 IPv6 全部超时，否则无 IPv6 网络会明显拖慢展示。
-        const ipv4 = await ipv4Promise.catch(() => '');
-        const lookupIp = ipv4 || await ipv6Promise.catch(() => '');
+        // 国内 IP 展示优先走支持 CORS 的 IPv4 API。myip.ipip.net 会直接返回国内归属地。
+        const ipv4Data = await ipv4Promise.catch(() => null);
+        const lookupIp = ipv4Data?.ip || await ipv6Promise.catch(() => '');
         if (!lookupIp) {
             throw new Error('无法获取国内 IPv4/IPv6 地址');
         }
 
-        const url = new URL(domesticIpApiUrl);
-        url.searchParams.set('ip', lookupIp);
+        domesticIp = lookupIp;
+        domesticIpAddress = ipv4Data?.locationText || '';
+        const displayAddress = domesticIpAddress || '归属地暂不可用';
+        const ipv4Text = ipv4Data?.ip || 'IPv4 获取失败';
+        const ipv6 = await Promise.race([
+            ipv6Promise.catch(() => ''),
+            new Promise(resolve => setTimeout(() => resolve(''), 1200))
+        ]);
+        const ipv6Text = ipv6 || 'IPv6 查询中/获取失败';
 
-        const response = await fetchWithTimeout(url.toString(), {
-            headers: {
-                'Accept': 'application/json'
-            }
-        }, 8000);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
         resultElem.classList.remove('loading-shimmer');
-
-        if (data?.ret === 200 && data?.data?.ip) {
-            const ipData = data.data;
-            domesticIp = lookupIp;
-            domesticIpAddress = [ipData.country, ipData.prov, ipData.city, ipData.area, ipData.isp]
-                .filter(Boolean)
-                .join(' ');
-            const displayAddress = domesticIpAddress || '未知';
-            const ipv4Text = ipv4 || 'IPv4 获取失败';
-            const ipv6 = await Promise.race([
-                ipv6Promise.catch(() => ''),
-                new Promise(resolve => setTimeout(() => resolve(''), 1200))
-            ]);
-            const ipv6Text = ipv6 || 'IPv6 查询中/获取失败';
-            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.15rem; line-height: 1.25;">IPv4：${ipv4Text}</div>
-                                    <div style="font-weight: 500; margin-bottom: 0.25rem; line-height: 1.25;">IPv6：${ipv6Text}</div>
-                                    <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.25;">${displayAddress}</div>`;
-            if (typeof runQualityCheckHandler === 'function') {
-                runQualityCheckHandler();
-            }
-        } else {
-            const errorMsg = data?.msg || data?.message || '返回数据格式不正确';
-            console.error("国内 IP API error:", errorMsg, data);
-            resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
-                                    <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
+        resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.15rem; line-height: 1.25;">IPv4：${ipv4Text}</div>
+                                <div style="font-weight: 500; margin-bottom: 0.25rem; line-height: 1.25;">IPv6：${ipv6Text}</div>
+                                <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.25;">${displayAddress}</div>`;
+        if (typeof runQualityCheckHandler === 'function') {
+            runQualityCheckHandler();
         }
     } catch (error) {
         console.error("获取国内 IP 数据时出错:", error);
@@ -475,7 +458,6 @@ async function getResultData() {
                                 <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
     }
 }
-
 
 
 
