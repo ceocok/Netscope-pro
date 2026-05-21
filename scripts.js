@@ -173,29 +173,55 @@ function loadMapScenario() {
 
 function getUserLocation() {
     if (navigator.geolocation) {
+        const handleSuccess = (position) => {
+            const { latitude, longitude } = position.coords;
+            userLocation = [latitude, longitude]; 
+
+            const isMobile = window.innerWidth <= 768;
+            const zoomLevel = isMobile ? 12 : 16;
+            map.setView(userLocation, zoomLevel);
+
+            if (userMarker) {
+                userMarker.remove();
+            }
+
+            userMarker = L.marker(userLocation, { icon: blueIcon }).addTo(map)
+                .bindPopup("<b>您的位置</b>").openPopup();
+        };
+
+        const handleError = (error, retryLowAccuracy = true) => {
+            const errorMap = {
+                1: '定位权限被拒绝',
+                2: '暂时无法获取当前位置',
+                3: '定位请求超时'
+            };
+            const errorText = errorMap[error.code] || error.message || '未知定位错误';
+            console.error('无法获取您的位置，距离信息将不可用:', {
+                code: error.code,
+                message: error.message,
+                text: errorText
+            });
+
+            if (retryLowAccuracy && error.code !== 1) {
+                navigator.geolocation.getCurrentPosition(
+                    handleSuccess,
+                    (retryError) => handleError(retryError, false),
+                    {
+                        enableHighAccuracy: false,
+                        timeout: 15000,
+                        maximumAge: 300000
+                    }
+                );
+            }
+        };
+
         navigator.geolocation.getCurrentPosition(
-            (position) => {
-                const { latitude, longitude } = position.coords;
-                userLocation = [latitude, longitude]; 
-
-                const isMobile = window.innerWidth <= 768;
-                const zoomLevel = isMobile ? 12 : 16;
-                map.setView(userLocation, zoomLevel);
-
-                if (userMarker) {
-                    userMarker.remove();
-                }
-
-                userMarker = L.marker(userLocation, { icon: blueIcon }).addTo(map)
-                    .bindPopup("<b>您的位置</b>").openPopup();
-            },
-            (error) => {
-                console.error("无法获取您的位置，距离信息将不可用:", error.message);
-            },
+            handleSuccess,
+            (error) => handleError(error, true),
             {
                 enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 0
+                timeout: 15000,
+                maximumAge: 60000
             }
         );
     } else {
@@ -371,26 +397,24 @@ async function getResultData() {
     try {
         const domesticIpApiUrl = window.NETSCOPE_CONFIG?.domesticIpApiUrl;
         if (!domesticIpApiUrl || domesticIpApiUrl.includes('YOUR_WORKER_SUBDOMAIN')) {
-            throw new Error('请先配置 Cloudflare Worker 国内 IP 查询接口');
+            throw new Error('请先配置国内 IP 查询接口');
         }
 
-        const [ipv4Result, ipv6Result] = await Promise.allSettled([
-            fetchTextFromProviders([
-                { name: 'ipv4.icanhazip.com', url: 'https://ipv4.icanhazip.com' },
-                { name: 'v4.ident.me', url: 'https://v4.ident.me' },
-                { name: 'ipv4.wtfismyip.com', url: 'https://ipv4.wtfismyip.com/text' },
-                { name: 'myip.ipip.net', url: 'https://myip.ipip.net', parse: (text) => text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || '' }
-            ]),
-            fetchTextFromProviders([
-                { name: 'v6.ident.me', url: 'https://v6.ident.me' },
-                { name: 'ipv6.icanhazip.com', url: 'https://ipv6.icanhazip.com' },
-                { name: 'api.ipquery.io', url: 'https://api.ipquery.io' }
-            ])
+        const ipv4Promise = fetchTextFromProviders([
+            { name: 'ipv4.icanhazip.com', url: 'https://ipv4.icanhazip.com' },
+            { name: 'v4.ident.me', url: 'https://v4.ident.me' },
+            { name: 'ipv4.wtfismyip.com', url: 'https://ipv4.wtfismyip.com/text' },
+            { name: 'myip.ipip.net', url: 'https://myip.ipip.net', parse: (text) => text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || '' }
+        ]);
+        const ipv6Promise = fetchTextFromProviders([
+            { name: 'v6.ident.me', url: 'https://v6.ident.me' },
+            { name: 'ipv6.icanhazip.com', url: 'https://ipv6.icanhazip.com' },
+            { name: 'api.ipquery.io', url: 'https://api.ipquery.io' }
         ]);
 
-        const ipv4 = ipv4Result.status === 'fulfilled' ? ipv4Result.value : '';
-        const ipv6 = ipv6Result.status === 'fulfilled' ? ipv6Result.value : '';
-        const lookupIp = ipv4 || ipv6;
+        // 国内 IP 归属地优先依赖 IPv4。不要等待 IPv6 全部超时，否则无 IPv6 网络会明显拖慢展示。
+        const ipv4 = await ipv4Promise.catch(() => '');
+        const lookupIp = ipv4 || await ipv6Promise.catch(() => '');
         if (!lookupIp) {
             throw new Error('无法获取国内 IPv4/IPv6 地址');
         }
@@ -419,7 +443,11 @@ async function getResultData() {
                 .join(' ');
             const displayAddress = domesticIpAddress || '未知';
             const ipv4Text = ipv4 || 'IPv4 获取失败';
-            const ipv6Text = ipv6 || 'IPv6 获取失败';
+            const ipv6 = await Promise.race([
+                ipv6Promise.catch(() => ''),
+                new Promise(resolve => setTimeout(() => resolve(''), 1200))
+            ]);
+            const ipv6Text = ipv6 || 'IPv6 查询中/获取失败';
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.15rem; line-height: 1.25;">IPv4：${ipv4Text}</div>
                                     <div style="font-weight: 500; margin-bottom: 0.25rem; line-height: 1.25;">IPv6：${ipv6Text}</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.25;">${displayAddress}</div>`;
@@ -428,7 +456,7 @@ async function getResultData() {
             }
         } else {
             const errorMsg = data?.msg || data?.message || '返回数据格式不正确';
-            console.error("ip9 国内 IP API error:", errorMsg, data);
+            console.error("国内 IP API error:", errorMsg, data);
             resultElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">获取失败</div>
                                     <div style="font-size: 0.875rem; color: var(--text-secondary);">${errorMsg}</div>`;
         }
