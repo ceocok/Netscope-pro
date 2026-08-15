@@ -512,7 +512,16 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 function hasValidCoordinate(value) {
-    return Number.isFinite(Number(value));
+    if (value === null || value === undefined) {
+        return false;
+    }
+
+    const text = String(value).trim();
+    if (text === '') {
+        return false;
+    }
+
+    return Number.isFinite(Number(text));
 }
 
 function parseLocationCoordinates(loc) {
