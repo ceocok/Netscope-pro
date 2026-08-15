@@ -322,10 +322,11 @@ async function getBlockedSiteIP() {
     blockedSiteIpElem.classList.add('loading-shimmer');
     
     try {
-        const response = await fetchWithTimeout("https://ipleak.net/json/", {
+        const response = await fetchWithTimeout("https://dns.google/resolve?name=whoami.ds.akahelp.net&type=TXT", {
             headers: {
                 'Accept': 'application/json'
-            }
+            },
+            cache: 'no-store'
         }, 8000);
         
         if (!response.ok) {
@@ -333,10 +334,35 @@ async function getBlockedSiteIP() {
         }
         
         const data = await response.json();
-        exitNodeIp = data.ip || null;
+        const answers = Array.isArray(data.Answer) ? data.Answer : [];
+        const ipRecords = answers
+            .map((answer) => (answer.data || '').match(/^ip(.+)$/i)?.[1]?.trim())
+            .filter(Boolean);
+        const ip =
+            ipRecords.find((value) => /^\d{1,3}(\.\d{1,3}){3}$/.test(value)) ||
+            ipRecords.find((value) => value.includes(':'));
+
+        if (!ip) {
+            throw new Error('未返回 Google 出口 IP');
+        }
+
+        exitNodeIp = ip;
+        let blockedLocation = '归属地暂不可用';
+        try {
+            const locationResponse = await fetchWithTimeout(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
+                headers: { 'Accept': 'application/json' },
+                cache: 'no-store'
+            }, 8000);
+            if (locationResponse.ok) {
+                const locationData = await locationResponse.json();
+                blockedLocation = formatLocationZh(locationData.city, locationData.country);
+            }
+        } catch {
+            // 归属地是附加信息，失败时保留已获取到的 Google 出口 IP。
+        }
+
         blockedSiteIpElem.classList.remove('loading-shimmer');
-        const blockedLocation = formatLocationZh(data.city_name || data.city, data.country_name || data.country);
-        blockedSiteIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${data.ip}</div>
+        blockedSiteIpElem.innerHTML = `<div style="font-weight: 500; margin-bottom: 0.25rem;">${ip}</div>
                                        <div style="font-size: 0.875rem; color: var(--text-secondary);">${blockedLocation}</div>`;
     } catch (error) {
         console.error('获取被墙站点IP失败:', error);
