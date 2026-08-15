@@ -866,14 +866,17 @@ function displayResult(data, input) {
         </div>
     `;
 
-    if (!hasValidCoordinate(data.latitude) || !hasValidCoordinate(data.longitude)) {
+    const latitude = Number(data.latitude);
+    const longitude = Number(data.longitude);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
         console.warn("查询结果缺少坐标信息，无法在地图上显示。");
         if (queryMarker) queryMarker.remove();
         if (queryLine) queryLine.remove();
         return;
     }
 
-    const targetLocation = [data.latitude, data.longitude];
+    const targetLocation = [latitude, longitude];
 
     if (queryMarker) queryMarker.remove();
     if (queryLine) queryLine.remove();
@@ -881,7 +884,7 @@ function displayResult(data, input) {
     queryMarker = L.marker(targetLocation, { icon: redIcon }).addTo(map);
 
     if (userLocation) {
-        const distance = getDistance(userLocation[0], userLocation[1], data.latitude, data.longitude);
+        const distance = getDistance(userLocation[0], userLocation[1], latitude, longitude);
         const popupContent = `<b>查询结果</b><br>距您 ${distance} 公里`;
         queryMarker.bindPopup(popupContent).openPopup();
 
@@ -962,7 +965,15 @@ async function jumpToPlaceOnMap(place) {
 
         if (data && data.length > 0) {
             const location = data[0];
-            const coordinates = [parseFloat(location.lat), parseFloat(location.lon)];
+            const latitude = Number.parseFloat(location.lat);
+            const longitude = Number.parseFloat(location.lon);
+
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+                console.warn("地图跳转返回了无效坐标。");
+                return false;
+            }
+
+            const coordinates = [latitude, longitude];
             map.setView(coordinates, 12);
 
             if (queryMarker) queryMarker.remove();
